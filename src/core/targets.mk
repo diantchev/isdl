@@ -3,7 +3,7 @@
 CoreUnitTests_SRC= \
 CoreUnitTests.cpp
 
-CoreUnitTests_INCLUDE = gtest-1.6.0/include ./ /usr/include/libxml2
+CoreUnitTests_INCLUDE = ./ /usr/include/libxml2
 
 CoreUnitTests_LIBS=-lpthread -lstdc++ -lrt -lgtest -lgtest_main
 

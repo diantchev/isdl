@@ -3,7 +3,7 @@
 
 #include <thread>
 #include <gtest/gtest.h>
-#include <core/LocklessQueue.h>
+#include "LocklessQueue.h"
 
 
 

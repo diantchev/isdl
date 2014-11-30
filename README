@@ -1,0 +1,8 @@
+Build prerequisits:
+
+1. python
+2. C++ build tools 
+3. Google test framework
+4. Environment variables CPATH and LIBRARY_PATH should be set appropriately so the compiler 
+finds external libraries and include files
+

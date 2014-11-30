@@ -1,5 +1,8 @@
 
--include makefile.init
+MAKEDIR:=$(dir $(MAKEFILE_LIST))
+
+-include $(MAKEDIR)/makefile.init
+-include $(MAKEDIR)/prebuild.mk
 
 
 
@@ -22,7 +25,6 @@ __mkobj = g++ -std=c++0x -O3 -g3 -Wall -fPIC -c $(DEFINES) $(INCLUDE_PATH) -fmes
 endif
 
 
--include prebuild.mk
 -include $(SRCDIR)/targets.mk
 -include $(SRCDIR)/prebuild.mk
 
@@ -67,12 +69,6 @@ $(_DEPS): $(OBJDIR)/%.d : $(SRCDIR)/%.cpp
 	$(call __mkobj,$<,$@)
 
 
-$(BINDIR):
-	-mkdir -p $(BINDIR)
-
-$(LIBDIR):
-	-mkdir -p $(LIBDIR)
-
 
 ######################################################################
 # Define templates for building shared libraries static libraries and binaries
@@ -81,16 +77,19 @@ $(LIBDIR):
 
 define __bin_target_template
 $$(BINDIR)/$(2) : $$(addprefix $$(OBJDIR)/,$$(subst .cpp,.o,$$($(1)_SRC)))
+	-mkdir -p $$(BINDIR)
 	$(call __mkbin,$$^,$$($(1)_LIB),$$@)
 endef
 
 define __slib_target_template
 $$(LIBDIR)/$(2) : $$(addprefix $$(OBJDIR)/,$$(subst .cpp,.o,$$($(1)_SRC)))
+	-mkdir -p $$(LIBIDR)
 	$(call __mkslib,$$^,$$($(1)_LIB),$$@)
 endef
 
 define __alib_target_template
 $$(LIBDIR)/$(2) : $$(addprefix $$(OBJDIR)/,$$(subst .cpp,.o,$$($(1)_SRC)))
+	-mkdir -p $$(LIBIDR)
 	$(call __mkalib,$$^,$$($(1)_LIB),$$@)
 endef
 
