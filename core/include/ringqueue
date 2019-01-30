@@ -1,0 +1,190 @@
+/**
+ * Declaration of C++ disruptor implementation 
+ */
+#include <functional>
+#include <vector>
+#include <atomic>
+#include <iostream>
+
+
+namespace isdl {
+
+/**
+ * Exception thrown when queue is full
+ */
+class queue_full{
+};
+
+
+/**
+ * Wrapper class needed to attach additional data to the element identifying
+ * if the element is commited
+ */
+template < typename Element > class element_wrapper {
+	template < typename E, typename S, size_t Size > friend class ringqueue;
+	friend std::vector<element_wrapper>;
+	Element _element;
+	bool _committed;
+
+};
+
+/**
+ * Ring queue data. 
+ */
+template < typename Element, typename IndexType, size_t Size > struct _ringqueue_data {
+
+	std::atomic < IndexType >  _allocate_index;
+
+	std::atomic < IndexType >  _read_index;
+
+	std::atomic < IndexType >  _commit_index;
+
+	element_wrapper<Element>  _elements[Size];
+
+	_ringqueue_data () : _allocate_index{0}, _read_index{0}, _commit_index{0} {}
+};
+
+
+template < typename Element, typename IndexType, size_t Size > class ringqueue {
+
+	_ringqueue_data<Element, IndexType, Size> *_data;
+
+	/**
+  	 * Helper function. Moves the passed by reference index to its new  position
+	 * based on the value returned by the predicate.
+	 * Another parameter gate is used to limit how far
+	 * moving is based on commited bit in element wrapper
+   	 */
+	void _move_index ( std::atomic<IndexType>& index, 
+		IndexType gate,
+		std::function<bool(IndexType)> predicate ) {
+		IndexType new_index = index;
+		for ( ; predicate ( new_index ) && new_index < gate; 
+			++new_index );
+		IndexType curr_index = index;
+		
+		while ( new_index > curr_index ) {
+			if ( index.compare_exchange_strong( curr_index, new_index ) ) break;
+		}
+	}
+
+	inline size_t _normalize ( IndexType index ) { return index % Size; }
+
+public:
+	/**
+  	 * Destructor
+	 */
+	~ringqueue() { delete _data; };
+
+	/**
+  	 * Constructor sets the sequnces at their correct locations
+ 	 */
+	ringqueue()  { _data = new _ringqueue_data<Element,IndexType,Size>(); }
+
+	/**
+	 * Delete copy constructor and assignment operator
+	 */
+	ringqueue ( const ringqueue& ) = delete;
+
+	ringqueue& operator = ( const ringqueue& ) = delete;
+
+
+	/**
+	 * Implementation of element access operator
+         */
+	Element& operator[] ( IndexType index ) {
+		return _data->_elements[ _normalize (index) ]._element;
+	}
+
+	/**
+         * Returns the first index of a range of elements to be allocated
+	 * throws an exception if the requested number of elements is not available
+	 * @param number_of_elements is the number of elements to allocate
+	 */ 
+	IndexType allocate ( size_t number_of_elements ) {
+		IndexType curr_index = _data->_allocate_index;
+		IndexType new_index = curr_index + number_of_elements;
+		while  ( new_index  <= Size + _data->_read_index ) { 
+			if ( _data->_allocate_index.compare_exchange_strong( curr_index, new_index)) {
+				return curr_index;
+			}
+			new_index = curr_index + number_of_elements;
+		} 
+		throw queue_full();
+	}
+
+
+	/**
+         * Commits the specified range of elements
+	 * @param index is the first index to be commited
+	 * @param number_of_elementss is the number of consecutive elements to be commited
+	 */
+	void commit ( IndexType index, size_t number_of_elements ) {
+		IndexType gate = _data->_allocate_index;
+		for ( auto curr = index; curr < index + number_of_elements; ++curr )  {
+			_data->_elements[_normalize(curr)]._committed = true;
+		}
+		_move_index ( _data->_commit_index, gate, 
+			[this](IndexType index){ 
+			return _data->_elements[_normalize ( index ) ]._committed; } );
+	}
+
+	/**
+	 * Free the specified sequence range starting with the seq specified
+	 * @param seq is the start sequence to be freed for future allocation
+	 * @param number_of_elementss is the number of consecutive events to be freed
+  	 */
+	void free ( IndexType index, size_t number_of_elements ) {
+
+		IndexType gate = _data->_commit_index;
+
+		for ( auto curr = index; curr < index + number_of_elements; ++curr )  {
+			_data->_elements[_normalize(curr)]._committed = false;
+		}
+		_move_index ( _data->_read_index, gate, 
+			[this](IndexType index){ 
+			return ! _data->_elements[_normalize ( index ) ]._committed; } );
+	}
+
+
+	/*
+ 	 * Returns first read index
+	 */
+	IndexType read_index () const {
+		return _data->_read_index;
+	}
+
+	/**
+	 * Publish index
+	 */
+	IndexType commit_index () const {
+		return _data->_commit_index;
+	}
+
+	/**
+	 * Returns the number of committed elements
+	 */
+	size_t committed_elements () const {
+		return _data->_commit_index - _data->_read_index ;
+	}
+
+	/**
+	 * Returns avaliable elements in the circular buffer
+	 */
+	size_t available_size () const {
+		return Size - ( _data->_allocate_index - _data->_read_index ) ;
+	}
+
+
+	/**
+  	 * Provides access to the next allocation sequence
+	 */
+	size_t allocate_index () {
+		return _data->_allocate_index;
+	}
+	
+};
+
+
+
+}

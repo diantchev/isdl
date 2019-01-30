@@ -1,0 +1,96 @@
+/********************************************************************************/
+/* C++ logging facility simillar to java. Uses logger name to controll logging  */
+/* of individual components. 							*/
+/********************************************************************************/
+#include <iostream>
+#include <string>
+
+
+namespace isdl {
+
+
+enum class LogLevel { 
+	Trace=4, Debug=3, Info=2, Warning=1, Error=0 
+};
+
+
+
+class Formatter {
+
+	std::ostream& _stream;
+	const char *_msg;
+	const char START_PARAMETER='{';
+	const char END_PARAMETER='}';
+
+public:
+	Formatter ( std::ostream& stream, const char *msg ) : _stream ( stream ), _msg ( msg )  {}
+
+private:
+	template <typename ValueType> void formatValue ( ValueType value ) {
+
+		for ( ; *_msg != '\0'; ++_msg ) {
+			if ( *_msg == START_PARAMETER ) {
+				int startCount = 0;
+				for ( ;*_msg != '\0'&& *_msg != END_PARAMETER; ++_msg ) {
+					if ( *_msg == START_PARAMETER ) {
+						++startCount;
+					}
+					if ( startCount % 2 == 0) {
+						_stream << *_msg;
+					}
+				}
+				/// Remove end of bracket 
+				if ( startCount % 2 == 1 ) {
+					++_msg;
+					_stream  << value;
+					break;
+				}
+				 
+			}
+			_stream << *_msg;
+		}
+	}
+public:
+	template < typename ValueType, typename... T> void format( ValueType value, T... args ) {
+
+		formatValue ( value );
+		format ( args... );
+		
+	}
+private:
+	void format () {
+		_stream << std::endl;
+	}
+};
+
+
+
+class Logger {
+
+	std::string _loggerName;
+	LogLevel _logLevel;
+
+
+public:
+	Logger ( const char* loggerName, LogLevel logLevel ) : _loggerName ( loggerName ), _logLevel( logLevel ) {
+	}
+
+	template < typename... T > void log ( LogLevel logLevel, const char *msg, T... args ) {
+		if ( _logLevel >= logLevel ) {
+
+			Formatter formatter ( std::cout , msg );
+			formatter.format(args...);
+			
+		}
+	}
+
+
+
+
+
+};
+
+
+
+
+}
