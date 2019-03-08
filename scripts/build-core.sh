@@ -25,16 +25,7 @@ if [ ! -d bin ]; then
 	mkdir -p bin
 fi
 
-compile_all core/test obj/core/test
-
-LIBPATH=$PWD/lib
-
-LIBS="-lunittest -lpthread"
-
-make_bin obj/core/test bin/coretest
-
-LD_LIBRARY_PATH=$PWD/lib ./bin/coretest
-
+export INCLUDE=core/include 
 
 echo "Compiling main objects"
 
@@ -43,3 +34,13 @@ compile_all core/main obj/core/main
 echo "Creating core lib"
 
 make_slib obj/core/main lib/libcore.so
+
+compile_all core/test obj/core/test
+
+LIBPATH=$PWD/lib
+
+LIBS="-lunittest -lpthread -lcore"
+
+make_bin obj/core/test bin/coretest
+
+LD_LIBRARY_PATH=$PWD/lib ./bin/coretest

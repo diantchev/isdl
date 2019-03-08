@@ -1,0 +1,311 @@
+/********************************************************************************/
+/* C++ logging facility simillar to java. Uses logger name to controll logging  */
+/* of individual components. 							*/
+/********************************************************************************/
+#include <ostream>
+#include <string>
+#include <chrono>
+
+
+namespace isdl {
+
+
+
+/**
+ *@brief Acceptable values for log level
+ */
+enum class log_level {
+	trace=4, debug=3, info=2, warning=1, error=0 
+};
+
+
+struct _log_level {
+	log_level _v;
+	_log_level ( log_level __v ) : _v { __v } {}
+	operator const char *();
+};
+
+std::ostream& operator << ( std::ostream& __s, const log_level& __v ) {
+	return __s << static_cast < const char * > ( _log_level ( __v ) );
+} 
+
+
+using timestamp = std::chrono::system_clock::time_point;
+using seq_t = uint64_t;
+
+/**
+ *@brief log_back interface
+ */
+struct log_back {
+
+	/**
+  	 *@brief Appends a logging record to the  backing store
+	 *@param __v is the log level for the log entry
+	 *@param __f is the name of the source file to log
+	 *@param __l is the line number to log
+	 *@param __t is a timepoint associated with the the log entry
+	 *@param __m is the log message
+	 *@param __s is the number of character in the message
+	 *@param __f is a flag indicating if it is the first record in a batch
+	 *@param __e is a boolean flag indicating if this is the last record
+	 *@return doesnt return value
+	 */
+	virtual void add ( log_level __v, const char *__f, int __l, timestamp __t, const char *__m, size_t __s, bool __b, bool __e ) = 0;
+	virtual ~log_back () {}; 
+	
+};
+
+
+/**
+ * @brief Implements stream_buffer interface
+ */
+class log_buffer : public std::basic_streambuf < char, std::char_traits < char >  > {
+
+        log_back *_back; 
+        seq_t _curr_seq;
+     
+        /**
+         *@brief initializes buffer pointers
+         */
+        void _init_ptrs();
+protected:
+        virtual std::streamsize
+                xsputn(const char_type* __s, std::streamsize __n);
+        virtual int_type
+                overflow(int_type __c  = traits_type::eof());
+
+
+
+public:
+	/**
+	 *@brief Constructor 
+	 *@param __v is the log level to be used with the buffer
+	 *@param __b is a pointer to the log_back to be used with log_buffer
+	 *@param __f is the file name to log for this logged entry
+	 *@param __l is the line number to log for this log entry
+	 *@param __t is the timestamp to log for this log entry
+	 */
+        log_buffer ( log_level __v, log_back *__b, const char *__f, int __l, timestamp __t );
+	/**
+	 *@brief destructor
+	 */
+        virtual ~log_buffer ();
+  
+};
+
+constexpr static char PARAMETER_START = '{';
+constexpr static char PARAMETER_END  = '}';
+constexpr static char FORMAT_END = '\0';
+
+/**
+ *@brief compile time function to find out number of {} pairs in a constant string
+ *	starting at @param start_pos
+ *@param __fmt is the format literal
+ *@param __pos is the position to start
+ *@param __pos is the position to start
+ *@param __escape_count is the current count to be used recursively
+ *@param __count is the current count
+ *@return number of parameters in the __fmt literal
+ */
+constexpr int get_params ( const char *__fmt, int __pos, int __escape_count, int __count ) {
+	
+	if ( __fmt[__pos] == PARAMETER_START ) {
+		return get_params ( __fmt, __pos + 1, __escape_count + 1, __count);
+	} else {
+		if ( __fmt[__pos] == FORMAT_END ) {
+			return __count;
+		} else if ( __fmt[__pos] ==  PARAMETER_END ) {
+			if ( __escape_count % 2 == 1 ) {
+				return get_params ( __fmt, __pos + 1, 0, __count + 1 );
+			} else {
+				return get_params ( __fmt, __pos + 1, 0, __count );
+			}
+			
+		} else {
+			return get_params ( __fmt, __pos + 1, __escape_count, __count );
+		}
+	}
+}
+
+/**
+ *@brief returns number of parameters in __fmt literal
+ *@param __fmt is a string literal to be parsed for parameter placeholders denoted with {}
+ *@return number of parameters placeholder found in the string literal
+ */
+constexpr int get_params ( const char *__fmt ) {
+	return get_params ( __fmt, 0, 0, 0 );
+}
+
+
+template < size_t count > struct fmt_segments {
+
+	struct segment {
+		const char *_start;
+		size_t _length;
+		int _flags;
+	}  _segments[ count + 1 ];
+
+	const char *_format_end;
+
+	const int _count;
+
+	
+
+	constexpr const char*  _parser ( const char *__fmt, int __pos, int __escape_count, int __count, bool __param ) {
+	
+		if ( __fmt[__pos] == PARAMETER_START ) {
+			/// Start of a placeholder we need to check the next character to
+			/// if this is a placeholder start or escape for a placeholder start
+			return _parser ( __fmt, __pos + 1, __escape_count + 1, __count, false );
+		} else {
+			if ( __fmt[__pos] == FORMAT_END ) {	  /// End of string close current segment
+				_segments[__count]._length = &__fmt[__pos] - _segments[__count]._start;
+				return &__fmt[__pos];
+			} else {
+				/// Check if the escape count is odd at this point if it is close the previous segment
+				/// and start parameter
+				if ( __escape_count % 2 == 1 ) {
+					_segments[__count]._length = &__fmt [ __pos-1 ] - _segments[ __count ]._start;
+					if ( __fmt[__pos] == PARAMETER_END ) {
+						/// The end of parameter open a new segment
+						_segments[ __count+1 ]._start = &__fmt[ __pos+1 ];
+						return _parser ( __fmt, __pos+1, 0, __count + 1, false );
+					} else {
+						return _parser ( __fmt, __pos+1, 0, __count, true );
+					}
+					
+					
+				} else {
+					/// Just another regular character check if we are in parameter
+					if ( __param ) {
+						switch ( __fmt[__pos] ) {
+						case PARAMETER_END:
+							/// Close the parameter and open new segment
+							_segments[ __count+1 ]._start = &__fmt[ __pos+1 ];
+							return _parser ( __fmt, __pos+1, 0, __count + 1, false );
+						break;
+						default:
+							return _parser ( __fmt, __pos+1, 0, __count, true );
+							
+						}
+					} 
+				}
+			}
+		}
+		return _parser ( __fmt, __pos +1, 0, __count, false );
+	}
+
+	constexpr fmt_segments ( const char *__fmt ) : _count ( count +1 ) {
+		_segments[0]._start = __fmt;
+		_format_end = _parser ( __fmt, 0, 0, 0, false );
+	}
+
+};
+
+
+
+/**
+ * @brief Logger class constructed by the logger factory which provides the reference to 
+ * the logging queue
+ */
+class basic_logger {
+	
+	constexpr static char PARAMETER_START = '{';
+	constexpr static char PARAMETER_END  = '}';
+	constexpr static char FORMAT_END = '\0';
+
+
+	template < size_t count, typename Value > constexpr int _log ( std::ostream& __str, fmt_segments<count>__segments, 
+			int __index,  Value __value ) {
+		__str.write ( __segments._segments[__index]._start, __segments._segments[__index]._length );
+		__str << __value;
+		//// Check if this is the last segment if it is write the last segment
+		if ( __index == __segments._count - 2 ) {
+			size_t remaining_length = __segments._format_end - 
+				__segments._segments[ __index + 1 ]._start;
+			__str.write ( __segments._segments[__index + 1 ]._start, remaining_length );
+			
+		} 
+		return __index;
+	}
+
+	template < size_t count, typename Value, typename... Args > 
+		constexpr int _log ( std::ostream& __str, fmt_segments<count>__segments, int __index, 
+			Value __value, Args... __args ) {
+		
+		int last_index = _log ( __str, __segments, __index , __value );
+
+		last_index = _log ( __str, __segments, last_index + 1, __args... );
+		/// Write whatever is left from the string
+		return last_index;
+	}
+
+	template <size_t count> int _log ( std::ostream& __str, fmt_segments<count> __segments, int __index ) {
+		__str.write ( __segments._segments[0]._start, __segments._end - 
+			__segments._segments[0]._start );
+		return __index;
+	}
+	
+protected:
+
+	/**
+	 * Assigned id for the logger
+	 */
+	log_level _level;
+	log_back *_back;
+
+	basic_logger ( log_back *back, log_level level) : _back {back}, _level { level } {}
+
+public:
+
+
+	/**
+	 * @brief Creates a log entry in the logback device
+	 * @param __v is the log level for the entry if the log level is less or equal to the
+	 * 	logger log level entry will be inserted
+	 * @param __f is the source file name where method is called usually this method is called
+	 * 	by macro so src_file name is automatically generated
+	 * @param __l is the line number in the source file where log entry is created
+	 * @param __m is format message for the parameters parameter place holder is marked with {}
+	 * @param __a is variable size array of parameters to be logged
+	 */
+	template < size_t Count, typename... T > void log ( log_level __v, const char *__f,
+			int __l, fmt_segments< Count > __s, T... __a ) {
+		if ( _level >= __v ) {
+        		log_buffer buffer ( __v, _back, __f, __l, std::chrono::system_clock::now() );
+                        std::basic_ostream < char, std::char_traits < char > > str ( &buffer );
+			_log ( str , __s, 0, __a... );
+			
+		}
+	}
+
+
+
+
+
+};
+
+
+
+struct logger_factory {
+	virtual basic_logger& get_logger ( const char *__n ) = 0;
+	virtual void add_logger ( const char *__n, log_back *__b, log_level __v ) = 0;
+	virtual ~logger_factory() {};
+};
+
+
+
+
+extern logger_factory *log_factory;
+
+
+
+
+
+
+}
+
+#define LOG( _LOGER, _LEVEL, _FMT, ... ) _LOGER.log <isdl::get_params ( _FMT )>( _LEVEL, __FILE__, __LINE__, isdl::fmt_segments < isdl::get_params (_FMT) > ( _FMT ), __VA_ARGS__ ); 
+
+
+

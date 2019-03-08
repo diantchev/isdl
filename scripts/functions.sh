@@ -12,18 +12,33 @@ function name {
 
 # Complies the input file to produce the output file
 function compile {
-	g++ -fPIC -c $1 -o $2
+	if [ -z $INCLUDE ]; then
+		g++ $GCC_FLAGS -fPIC -c $1 -o $2
+	else
+		g++ $GCC_FLAGS -I$INCLUDE -fPIC -c $1 -o $2
+	fi
+}
+
+# Complies the input file to produce the output file
+function assembly {
+	if [ -z $INCLUDE ]; then
+		g++ -fPIC -S $1 -o $2
+	else
+		g++ -I$INCLUDE -fPIC -S $1 -o $2
+	fi
 }
 
 # Comiles all the source files in the specified directory
 function compile_all {
 	for i in `ls $1/*.cpp`; do
-		objfile=$2/`name $i`.o; 
+		objfile=$2/`name $i`.o;
+		asmfile=$2/`name $i`.asm;
 		if [ -f $objfile ]; then
 			if [ $i -nt $objfile ]; then
 				compile $i $objfile
 			fi
 		else
+			assembly $i $asmfile
 			compile $i $objfile
 		fi
 	done;
