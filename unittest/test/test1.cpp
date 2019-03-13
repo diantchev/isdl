@@ -1,4 +1,4 @@
-#include "../include/unittest.h"
+#include <unittest>
 
 void test1 () {
 	ASSERT_EQUAL ( 5, 10, "Test assertion should be false" );

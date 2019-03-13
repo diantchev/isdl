@@ -25,7 +25,7 @@ if [ ! -d bin ]; then
 	mkdir -p bin
 fi
 
-export INCLUDE=core/include 
+export INCLUDE="-Icore/include -Iunittest/include"
 
 echo "Compiling main objects"
 

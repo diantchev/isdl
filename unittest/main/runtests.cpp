@@ -4,7 +4,7 @@
  */
 
 
-#include "../include/unittest.h"
+#include <unittest>
 #include <iostream>
 
 isdl::test_runner _test_runner;
@@ -19,31 +19,45 @@ void test::add_assertion ( const assertion& assert ) {
 
 
 void test_runner::add_test ( const char *file_name, const char *test_name, void ( *f ) () ) {
-	_tests.push_back ( test ( file_name, test_name, f ) );
+	_tests[std::string(test_name)] = test ( file_name, test_name, f );
 }
 
 
 void test_runner::run () {
-	std::cout << "Runnig: " << _tests.size() << " tests."<< std::endl;
-	for ( _current_test = 0; _current_test < _tests.size(); ++_current_test ) {
-		std::cout << "Running test: " << _tests[_current_test]._test_name << std::endl;
-		_tests[_current_test]._start_time = std::chrono::system_clock::now();
-                _tests[_current_test]._test_function();
-		_tests[_current_test]._end_time = std::chrono::system_clock::now();
+	std::vector < std::string > run_list;
+	for ( auto it : _tests ) {
+		run_list.push_back ( it.first );
+	}
+	run ( run_list );
+}
+
+void test_runner::run ( const std::vector<std::string>& run_list ) {
+	std::cout << "Runnig: " << run_list.size() << " tests. "<< std::endl;
+	for ( std::string curr_test : run_list ) {
+		_current_test = _tests.find ( curr_test );
+		if ( _current_test != _tests.end() ) {
+			std::cout << "Running test: " << _current_test->second._test_name << std::endl;
+			_current_test->second._start_time = std::chrono::system_clock::now();
+              		_current_test->second._test_function();
+			_current_test->second._end_time = std::chrono::system_clock::now();
+		} else {
+			std::cout << __RED << "Test: "<< curr_test << " is not a valid test name" << __NORMAL << std::endl;
+		}
 
         }
 }
 
 void test_runner::add_assertion ( const assertion& assert ) {
-	_tests[_current_test].add_assertion ( assert );
-	assert._result?++_tests[_current_test]._successful:
-		++_tests[_current_test]._failed;
+	_current_test->second.add_assertion ( assert );
+	assert._result?++_current_test->second._successful:
+		++_current_test->second._failed;
 } 
 
 
 std::ostream& operator << ( std::ostream& str, const test& tst ) {
 	str << "  Test : " << tst._test_name << std::endl;
-	str << "  Run time: " << (tst._end_time -tst._start_time).count();
+	str << "  Run time: " << std::chrono::duration_cast < std::chrono::microseconds >
+			(tst._end_time -tst._start_time).count() << "us";
 	str << "  Successful : "<< tst._successful << ", Failed : " << tst._failed << std::endl;
 	for ( auto assert : tst._assertions ) {
 		str << "    "<< tst._file_name << "," << assert._src_line << " , " << assert._text << std::endl; 
@@ -55,7 +69,7 @@ std::ostream& operator << ( std::ostream& str, const test& tst ) {
 std::ostream& operator << ( std::ostream& str, const test_runner& runner ) {
 	str << "Number of test: " << runner._tests.size() << std::endl;
 	for ( auto test : runner._tests ) {
-		str << test << std::endl;
+		str << test.second << std::endl;
 	}
 	return str;
 }
@@ -76,7 +90,15 @@ int main ( int argc, char* argv[] ) {
 
 	std::cout << "Start running unittests " << std::endl;
 
-	_test_runner.run();
+	if ( argc > 1 ) {
+		std::vector < std::string > tests_to_run;
+		for ( int i = 1; i< argc; ++i ) {
+			tests_to_run.push_back ( std::string( argv[i] ) );
+		}
+		_test_runner.run ( tests_to_run );
+	} else {
+		_test_runner.run();
+	}
 
 	std::cout << _test_runner << std::endl;
 }

@@ -1,5 +1,5 @@
-#include "../include/ringqueue"
-#include "../../unittest/include/unittest.h"
+#include <ringqueue>
+#include <unittest>
 #include <iostream>
 #include <thread>
 #include <memory>
@@ -112,9 +112,7 @@ public:
 		int64_t last_index = 0;
 		while ( true ) {
 			int64_t value = 0;
-			int64_t read_index = _queue.read_index();
-			size_t committed = _queue.committed_elements();
-			while ( last_index < read_index + committed ) {
+			while ( last_index < _queue.commit_index() ) {
 			
 				if ( last_index % _number == _index ) {
 					value = _queue [ last_index ];
@@ -193,7 +191,14 @@ void test5 () {
 	std::thread publisher2 ( Publisher<70000> ( 2, 10000001, 2, queue) );
 	publisher1.join();
 	publisher2.join();
-	int64_t index = queue.allocate(3);
+	int64_t index = 0;
+	while ( true ) {
+		try {
+			index = queue.allocate(3);
+			break;
+		} catch ( isdl::queue_full f ) {
+		}
+	}
 	for ( int i = 0; i< 3; ++i ) {
 		queue [ index+i ] = -1;
 		queue.commit( index+i, 1);

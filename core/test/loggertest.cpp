@@ -1,7 +1,7 @@
 /*************************************************************************************
  * Testing logger
  */
-#include <../../unittest/include/unittest.h>
+#include <unittest>
 #include <logger>
 #include <iostream>
 #include <cstring>

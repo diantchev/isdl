@@ -1,10 +1,17 @@
 #pragma once
 #include <utility>
+#include <string>
 #include <vector>
+#include <map>
 #include <sstream>
 #include <chrono>
 
 namespace isdl {
+
+
+#define __RED  "\033[1;31m"
+#define __NORMAL  "\033[0m"
+#define __GREEN  "\033[1;32m"
 
 struct assertion {
 	int _src_line;
@@ -16,12 +23,14 @@ public:
 		 Actual actual, Expected expected, bool result ) : _src_line {src_line}, _result ( result ) {
 		std::ostringstream str;
 		if ( _result ) {
-			str << "OK, " << text << ", Expected: " << expected << " Actual: " << actual; 
+			str << __GREEN << "OK, " << text << ", Expected: " << expected << " Actual: " << actual << __NORMAL; 
 		} else {
-			str << "FAILED, " << text << ", Expected: " << expected << " Actual: " << actual; 
+			str << __RED << "FAILED, " << text << ", Expected: " << expected << " Actual: " << actual << __NORMAL; 
 		}
 		_text = str.str();
 	}
+
+	assertion () : _src_line ( 0 ), _text {0}, _result { false } {}
 	
 };
 
@@ -41,6 +50,9 @@ public:
 		_test_name {test_name}, _successful( 0 ), _failed ( 0 ),
 		_test_function { function } {} 
 
+	test () : _file_name {nullptr}, _test_name {nullptr}, _successful {0} , _failed {0}, _test_function {nullptr},
+		_assertions (0) {}
+
 	void add_assertion ( const assertion& assert );
 
 };
@@ -53,9 +65,8 @@ std::ostream& operator << (std::ostream& str, const test& tst );
  */
 class test_runner {
 	friend std::ostream& operator << ( std::ostream&, const test_runner&);
-	std::vector < test > _tests;
-	
-	int _current_test;
+	std::map < std::string, test> _tests;
+	std::map < std::string, test>::iterator  _current_test;
 
 public:
 	void add_test ( const char *file_name, const char *test_name, void ( *f ) () );
@@ -63,6 +74,7 @@ public:
 	void add_assertion ( const assertion& assert );
 
 	void run ();
+	void run (const std::vector<std::string>& tests);
 };
 
 std::ostream& operator << ( std::ostream& ostream, const test_runner& runner );

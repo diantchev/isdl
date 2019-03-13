@@ -12,34 +12,57 @@ function name {
 
 # Complies the input file to produce the output file
 function compile {
-	if [ -z $INCLUDE ]; then
-		g++ $GCC_FLAGS -fPIC -c $1 -o $2
-	else
-		g++ $GCC_FLAGS -I$INCLUDE -fPIC -c $1 -o $2
-	fi
+	echo "g++ $GCC_FLAGS $INCLUDE -fPIC -c $1 -o $2"
+	g++ $GCC_FLAGS $INCLUDE -fPIC -c $1 -o $2
 }
 
 # Complies the input file to produce the output file
 function assembly {
-	if [ -z $INCLUDE ]; then
-		g++ -fPIC -S $1 -o $2
-	else
-		g++ -I$INCLUDE -fPIC -S $1 -o $2
-	fi
+	g++ $INCLUDE -fPIC -S $1 -o $2
+}
+
+
+#Finds include dependencies for the specified source file
+function get_include_dep {
+	DEP="";
+	echo "Checking dependencies for $1";
+	for dep in `g++ $INCLUDE -M $1`; do
+		if [ -e $dep ]; then
+			DEP="${DEP} $dep"
+		fi
+	done;
+	echo $DEP;
 }
 
 # Comiles all the source files in the specified directory
 function compile_all {
 	for i in `ls $1/*.cpp`; do
+		echo "Validating file $i for compilation"
 		objfile=$2/`name $i`.o;
 		asmfile=$2/`name $i`.asm;
-		if [ -f $objfile ]; then
-			if [ $i -nt $objfile ]; then
-				compile $i $objfile
+		should_compile="false";
+		if [ ! -f $objfile ]; then
+			should_compile = "true"	#Compile if the object file doesn't exist
+		fi
+		# Check if include files are updated
+		if [ ! $should_compile = "true" ]; then
+			if [ $i -nt $objfile ]; then 
+				should_complie="true" 	#Compile if the source file is newer than the object file
 			fi
-		else
-			assembly $i $asmfile
+		fi;
+		if [ ! $should_compile = "true" ]; then 
+			for dep in `get_include_dep $i`; do 
+				if [ $dep -nt $objfile ]; then
+					should_compile="true";
+					break;
+				fi; 
+			done;
+		fi;
+		if [ $should_compile = "true" ]; then
+			echo "Compiling $i";
 			compile $i $objfile
+		else
+			echo "File $i hasn't change skipping compilation"
 		fi
 	done;
 }
