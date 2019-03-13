@@ -76,14 +76,20 @@ clean )
 	clean $BUILD
 	;;
 test )
-	LIBPATH=$PWD/lib
-	LIBS="-lunittest -lpthread -lcore"
+	export INCLUDE="-Iunittest/include $INCLUDE"
+	LIBPATH="lib $LIBPATH"
+	LIBS="-lunittest -lpthread ${LIBS}"
+	UNITTESTBIN="${BUILD}test"
+	echo "Building $UNITTESTBIN"
 	compile_all $BUILD/test obj/$BUILD/test
-	make_bin obj/$BUILD/test bin/$BUILD_test
+	make_bin obj/$BUILD/test bin/$UNITTESTBIN
 	shift 2
-	LD_LIBRARY_PATH=$PWD/lib ./bin/$BUILD_test $@
+	LD_LIBRARY_PATH=$PWD/lib; bin/$UNITTESTBIN $@
 	;;
 * )
+	echo "Invalid operation"
+	help
+	exit
 esac
 
 
