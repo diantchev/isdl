@@ -213,3 +213,50 @@ void test5 () {
 TEST ( "Two producers three consumers test", test5 )
 
 
+/**
+ * Test if static power fof two check functoion
+ */
+void test6() {
+	ASSERT_EQUAL ( isdl::is_power_of_two ( 7000 ), false, "Make sure numbers that are not power of two are identified" );
+	ASSERT_EQUAL ( isdl::is_power_of_two ( 4096 ), true, "Make sure numbers that are power of two are identified" );
+	ASSERT_EQUAL ( isdl::is_power_of_two ( 8192 ), true, "Make sure numbers that are power of two are identified" );
+	ASSERT_EQUAL ( isdl::is_power_of_two ( 65536 ), true, "Make sure numbers that are power of two are identified" );
+}
+
+TEST ( "Static power of two check test", test6 )
+
+/**
+ * Multiple producers multiple consumers test with queue size power of two
+ */
+void test7 () {
+	isdl::ringqueue < int, int64_t, 65536 > queue;
+	int64_t acumulator = 0;
+	int64_t acumulator1 = 0;
+	int64_t acumulator2 = 0;
+	std::thread receiver1 ( Receiver<65536> ( acumulator, queue, 3, 0 ) );
+	std::thread receiver2 ( Receiver<65536> ( acumulator1, queue, 3, 1 ) );
+	std::thread receiver3 ( Receiver<65536> ( acumulator2, queue, 3, 2 ) );
+	std::thread publisher1 ( Publisher<65536> ( 1, 10000001, 2, queue) );
+	std::thread publisher2 ( Publisher<65536> ( 2, 10000001, 2, queue) );
+	publisher1.join();
+	publisher2.join();
+	int64_t index = 0;
+	while ( true ) {
+		try {
+			index = queue.allocate(3);
+			break;
+		} catch ( isdl::queue_full f ) {
+		}
+	}
+	for ( int i = 0; i< 3; ++i ) {
+		queue [ index+i ] = -1;
+		queue.commit( index+i, 1);
+	}
+	receiver1.join();
+	receiver2.join();
+	receiver3.join();
+	ASSERT_EQUAL ( acumulator+acumulator1+acumulator2, 10000001L*(10000000L/2), "Make sure acumulated value is correct" );
+}
+	
+TEST ( "Two producers three consumers test ring size power of two", test7 )
+

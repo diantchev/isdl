@@ -45,7 +45,24 @@ template < typename Element, typename IndexType, size_t Size > struct _ringqueue
 };
 
 
+constexpr bool is_power_of_two ( const size_t value ) {
+	if ( value == 0 ) return false;
+
+	if ( value & 1 && value > 1 ) {
+		return false;
+	} else {
+		if ( value == 1 ) {
+			true;
+		} else {
+			return is_power_of_two ( value >> 1 );
+		}
+	}
+}
+
+
 template < typename Element, typename IndexType, size_t Size > class ringqueue {
+
+
 
 	_ringqueue_data<Element, IndexType, Size> *_data;
 
@@ -68,7 +85,11 @@ template < typename Element, typename IndexType, size_t Size > class ringqueue {
 		}
 	}
 
-	inline size_t _normalize ( IndexType index ) { return index % Size; }
+
+	inline size_t _normalize ( IndexType index ) {
+		return index % Size;
+	}
+
 
 public:
 	/**
@@ -93,7 +114,7 @@ public:
 	 * Implementation of element access operator
          */
 	Element& operator[] ( IndexType index ) {
-		return _data->_elements[ _normalize (index) ]._element;
+		return _data->_elements[ _normalize ( index ) ]._element;
 	}
 
 	/**
@@ -122,7 +143,7 @@ public:
 	void commit ( IndexType index, size_t number_of_elements ) {
 		IndexType gate = _data->_allocate_index;
 		for ( auto curr = index; curr < index + number_of_elements; ++curr )  {
-			_data->_elements[_normalize(curr)]._committed = true;
+			_data->_elements[_normalize ( curr ) ]._committed = true;
 		}
 		_move_index ( _data->_commit_index, gate, 
 			[this](IndexType index){ 
@@ -139,11 +160,11 @@ public:
 		IndexType gate = _data->_commit_index;
 
 		for ( auto curr = index; curr < index + number_of_elements; ++curr )  {
-			_data->_elements[_normalize(curr)]._committed = false;
+			_data->_elements[ _normalize ( curr ) ]._committed = false;
 		}
 		_move_index ( _data->_read_index, gate, 
 			[this](IndexType index){ 
-			return ! _data->_elements[_normalize ( index ) ]._committed; } );
+			return ! _data->_elements[ _normalize ( index ) ]._committed; } );
 	}
 
 

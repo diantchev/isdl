@@ -84,7 +84,7 @@ test )
 	compile_all $BUILD/test obj/$BUILD/test
 	make_bin obj/$BUILD/test bin/$UNITTESTBIN
 	shift 2
-	LD_LIBRARY_PATH=$PWD/lib; bin/$UNITTESTBIN $@
+	LD_LIBRARY_PATH=$PWD/lib; bin/$UNITTESTBIN "$@"
 	;;
 * )
 	echo "Invalid operation"
