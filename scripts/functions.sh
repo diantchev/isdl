@@ -42,7 +42,7 @@ function compile_all {
 		asmfile=$2/`name $i`.asm;
 		should_compile="false";
 		if [ ! -f $objfile ]; then
-			should_compile = "true"	#Compile if the object file doesn't exist
+			should_compile ="true";	#Compile if the object file doesn't exist
 		fi
 		# Check if include files are updated
 		if [ ! $should_compile = "true" ]; then

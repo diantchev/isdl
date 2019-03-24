@@ -64,7 +64,7 @@ struct log_event {
 
 
 
-using log_queue = ringqueue < log_event, seq_t, LOG_QUEUE_SIZE >;
+using log_queue = ringqueue < log_event, seq_t, LOG_QUEUE_SIZE,1 >;
 
 
 static class basic_logback : public log_back {
@@ -116,11 +116,11 @@ class log_function {
 			_process_event ( prev_seq );
 			ev._back->add ( ev._level, ev._file_name, ev._src_line_number,
 			ev._timestamp, ev._msg, ev._msg_len, false, ev._end_of_batch );
-			_log_queue.free( seq, 1 );
+			_log_queue.free( 0, seq, 1 );
 		} else {
 			ev._back->add ( ev._level, ev._file_name, ev._src_line_number,
 			ev._timestamp, ev._msg, ev._msg_len, true, ev._end_of_batch );
-			_log_queue.free( seq, 1 );
+			_log_queue.free( 0, seq, 1 );
 		}
 	}
 	
@@ -130,11 +130,8 @@ public:
 	void operator () () {
 		seq_t last_seq = 0;	
 		while ( _run ) {
-			seq_t read_index = _log_queue.read_index();
-                        size_t committed = _log_queue.committed_elements();
-			int elements_processed = 0;
-			for ( ; last_seq < read_index + committed; ++last_seq ) {
-				++elements_processed;
+			size_t elements_processed = _log_queue.committed ( last_seq );
+			for ( size_t ii= 0; ii < elements_processed; ++last_seq, ++ii ) {
 				log_event& curr_event = _log_queue[last_seq];
 				/// Check if it is the end of batch process if only end of batch 
 				if ( curr_event._end_of_batch ) {

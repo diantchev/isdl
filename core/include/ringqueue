@@ -5,9 +5,23 @@
 #include <vector>
 #include <atomic>
 #include <iostream>
+#include <thread>
+#include <chrono>
 
 
 namespace isdl {
+
+
+template < typename ValueType > constexpr bool compare ( ValueType value1, ValueType value2 ) { return value1 == value2; }
+constexpr int get_power_of_two ( const int value, const int power ) {
+	//static_assert (  compare ( value , 0 ), "Incorrect power of two value" );
+	if ( value == 0 ) return 0;
+	if ( value == 1 ) {
+		return power;
+	} else {
+		return get_power_of_two ( value >> 1, power + 1);
+	}
+}
 
 /**
  * Exception thrown when queue is full
@@ -17,77 +31,56 @@ class queue_full{
 
 
 /**
- * Wrapper class needed to attach additional data to the element identifying
- * if the element is commited
- */
-template < typename Element > class element_wrapper {
-	template < typename E, typename S, size_t Size > friend class ringqueue;
-	friend std::vector<element_wrapper>;
-	Element _element;
-	bool _committed;
-
-};
-
-/**
  * Ring queue data. 
  */
-template < typename Element, typename IndexType, size_t Size > struct _ringqueue_data {
+template < typename Element, typename IndexType, size_t Size, size_t Readers > struct _ringqueue_data {
 
 	std::atomic < IndexType >  _allocate_index;
 
-	std::atomic < IndexType >  _read_index;
+	std::atomic < IndexType > _commit_index;
 
-	std::atomic < IndexType >  _commit_index;
+	std::atomic < IndexType > _read_index [Readers];
 
-	element_wrapper<Element>  _elements[Size];
+	std::atomic < IndexType > _cached_gate;
 
-	_ringqueue_data () : _allocate_index{0}, _read_index{0}, _commit_index{0} {}
+	Element  _elements[Size];
+
+	IndexType _committed[Size];
+
+	_ringqueue_data () : _allocate_index{0}, _commit_index {0}, _cached_gate {0} {
+		for ( size_t reader = 0 ; reader < Readers; ++ reader ) {
+			_read_index[reader]=0;
+		}
+		for ( size_t index = 0; index < Size; ++index ) {
+			_committed[index] = -1;
+		}
+	}
 };
 
 
-constexpr bool is_power_of_two ( const size_t value ) {
-	if ( value == 0 ) return false;
-
-	if ( value & 1 && value > 1 ) {
-		return false;
-	} else {
-		if ( value == 1 ) {
-			true;
-		} else {
-			return is_power_of_two ( value >> 1 );
-		}
-	}
-}
-
-
-template < typename Element, typename IndexType, size_t Size > class ringqueue {
+template < typename Element, typename IndexType, size_t Size, size_t Readers > class ringqueue {
 
 
 
-	_ringqueue_data<Element, IndexType, Size> *_data;
+	_ringqueue_data<Element, IndexType, Size, Readers> *_data;
+
+	const int _shift = get_power_of_two ( Size , 0 );
+
+	const int _mask = Size - 1;
+
 
 	/**
-  	 * Helper function. Moves the passed by reference index to its new  position
-	 * based on the value returned by the predicate.
-	 * Another parameter gate is used to limit how far
-	 * moving is based on commited bit in element wrapper
-   	 */
-	void _move_index ( std::atomic<IndexType>& index, 
-		IndexType gate,
-		std::function<bool(IndexType)> predicate ) {
-		IndexType new_index = index;
-		for ( ; predicate ( new_index ) && new_index < gate; 
-			++new_index );
-		IndexType curr_index = index;
-		
-		while ( new_index > curr_index ) {
-			if ( index.compare_exchange_strong( curr_index, new_index ) ) break;
+ 	 * Finds the minimum of all the indexes
+	 */
+	inline IndexType _min ( ) const {
+		IndexType min  = _data->_read_index[0].load ( std::memory_order_relaxed );
+		for ( size_t i = 1; i < Readers; ++i ) {
+			IndexType value = _data->_read_index [i].load ( std::memory_order_relaxed );
+			if ( min > value ) {
+				min  = value ;
+			}
 		}
-	}
-
-
-	inline size_t _normalize ( IndexType index ) {
-		return index % Size;
+		return min;
 	}
 
 
@@ -100,7 +93,7 @@ public:
 	/**
   	 * Constructor sets the sequnces at their correct locations
  	 */
-	ringqueue()  { _data = new _ringqueue_data<Element,IndexType,Size>(); }
+	ringqueue()  { _data = new _ringqueue_data<Element,IndexType,Size, Readers>(); }
 
 	/**
 	 * Delete copy constructor and assignment operator
@@ -114,8 +107,8 @@ public:
 	 * Implementation of element access operator
          */
 	Element& operator[] ( IndexType index ) {
-		return _data->_elements[ _normalize ( index ) ]._element;
-	}
+		return _data->_elements[  index & _mask ];
+	}	
 
 	/**
          * Returns the first index of a range of elements to be allocated
@@ -123,15 +116,35 @@ public:
 	 * @param number_of_elements is the number of elements to allocate
 	 */ 
 	IndexType allocate ( size_t number_of_elements ) {
-		IndexType curr_index = _data->_allocate_index;
-		IndexType new_index = curr_index + number_of_elements;
-		while  ( new_index  <= Size + _data->_read_index ) { 
-			if ( _data->_allocate_index.compare_exchange_strong( curr_index, new_index)) {
-				return curr_index;
+		IndexType curr_index = _data->_allocate_index.load ( std::memory_order_relaxed );
+		IndexType gate = _data->_cached_gate.load ( std::memory_order_relaxed );
+		while ( true ) {
+			///If there is free space available
+			IndexType new_index = curr_index + number_of_elements;
+			if ( new_index <= Size + gate ) {
+				if ( _data->_allocate_index.compare_exchange_strong ( curr_index,
+					 new_index, std::memory_order_relaxed, std::memory_order_relaxed ) ) {
+					return curr_index;
+				}
+			} else {
+				/// Get the new read index check if new slots are available
+				gate = _min();
+				if ( ( gate + Size ) < new_index ) {
+					std::this_thread::sleep_for ( std::chrono::nanoseconds ( 1 ) );
+					continue;
+				}
+				
+				_data->_cached_gate.store ( gate, std::memory_order_relaxed );
 			}
-			new_index = curr_index + number_of_elements;
 		} 
-		throw queue_full();
+	}
+
+	size_t committed ( IndexType index ) {
+		_data->_commit_index.load ( std::memory_order_relaxed );
+		size_t count = 0;
+		for ( ;  ( _data->_committed [ ( index )& _mask ] == ( ( index ) >> _shift ) ) ;
+			++count, ++index );
+		return count;
 	}
 
 
@@ -141,69 +154,58 @@ public:
 	 * @param number_of_elementss is the number of consecutive elements to be commited
 	 */
 	void commit ( IndexType index, size_t number_of_elements ) {
-		IndexType gate = _data->_allocate_index;
-		for ( auto curr = index; curr < index + number_of_elements; ++curr )  {
-			_data->_elements[_normalize ( curr ) ]._committed = true;
-		}
-		_move_index ( _data->_commit_index, gate, 
-			[this](IndexType index){ 
-			return _data->_elements[_normalize ( index ) ]._committed; } );
+		IndexType end = index + number_of_elements;
+		for ( auto _curr = index; _curr < end ; ++_curr ) 
+			_data->_committed [ _curr & _mask ] = _curr >> _shift;
+
+		_data->_commit_index.store ( end , std::memory_order_release );
+
 	}
+
 
 	/**
 	 * Free the specified sequence range starting with the seq specified
+	 * @param reader is the index for the reader
 	 * @param seq is the start sequence to be freed for future allocation
 	 * @param number_of_elementss is the number of consecutive events to be freed
   	 */
-	void free ( IndexType index, size_t number_of_elements ) {
-
-		IndexType gate = _data->_commit_index;
-
-		for ( auto curr = index; curr < index + number_of_elements; ++curr )  {
-			_data->_elements[ _normalize ( curr ) ]._committed = false;
-		}
-		_move_index ( _data->_read_index, gate, 
-			[this](IndexType index){ 
-			return ! _data->_elements[ _normalize ( index ) ]._committed; } );
+	void free ( size_t reader, IndexType index, size_t number_of_elements ) {
+		IndexType end = index + number_of_elements;
+		_data->_read_index[reader].store ( end, std::memory_order_relaxed );
 	}
 
 
-	/*
- 	 * Returns first read index
-	 */
-	IndexType read_index () const {
-		return _data->_read_index;
-	}
-
-	/**
-	 * Publish index
-	 */
-	IndexType commit_index () const {
-		return _data->_commit_index;
-	}
-
-	/**
-	 * Returns the number of committed elements
-	 */
-	size_t committed_elements () const {
-		return _data->_commit_index - _data->_read_index ;
-	}
 
 	/**
 	 * Returns avaliable elements in the circular buffer
 	 */
 	size_t available_size () const {
-		return Size - ( _data->_allocate_index - _data->_read_index ) ;
+		return Size - ( _data->_allocate_index.load ( std::memory_order_relaxed )
+				 - _min() ) ;
 	}
 
-
-	/**
-  	 * Provides access to the next allocation sequence
-	 */
-	size_t allocate_index () {
-		return _data->_allocate_index;
+	size_t committed_elements () const {
+		size_t elements=0;
+		for ( auto _curr = _min() ; 
+			_data->_committed [ _curr & _mask ] == _curr >> _shift ; ++_curr, ++elements );
+		return elements; 
+		
 	}
 	
+	IndexType allocate_index () const {
+		return _data->_allocate_index.load ( std::memory_order_relaxed );
+	}
+
+
+	IndexType commit_index () const {
+		return _min() + committed_elements ();
+	}
+
+	IndexType read_index () const {
+		return _min();
+	}
+
+
 };
 
 

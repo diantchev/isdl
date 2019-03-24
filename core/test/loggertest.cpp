@@ -48,7 +48,7 @@ struct test_logback : public isdl::log_back {
 	const char *_file_name;
 	int _line_number;
 	isdl::timestamp _timestamp;
-	bool _completed;
+	volatile bool _completed;
 	
 	
 	test_logback ( size_t buffer_size ) : _message_buffer { new char [buffer_size] },
