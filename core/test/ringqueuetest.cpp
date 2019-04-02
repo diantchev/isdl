@@ -128,7 +128,7 @@ public:
 				last_index+= count;
 			}
 			if ( value < 0 ) break;
-			std::this_thread::sleep_for ( std::chrono::nanoseconds ( 10 ) );
+			std::this_thread::sleep_for ( std::chrono::nanoseconds ( 1 ) );
 		}
 
 	}
