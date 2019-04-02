@@ -140,7 +140,7 @@ public:
 	}
 
 	size_t committed ( IndexType index ) {
-		_data->_commit_index.load ( std::memory_order_relaxed );
+		_data->_commit_index.load ( std::memory_order_acquire );
 		size_t count = 0;
 		for ( ;  ( _data->_committed [ ( index )& _mask ] == ( ( index ) >> _shift ) ) ;
 			++count, ++index );
