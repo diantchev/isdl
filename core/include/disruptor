@@ -1,0 +1,644 @@
+/**
+ * C++ implementation of the disruptor pattern
+ */
+#include <limits>
+#include <atomic>
+#include <string>
+#include <limits>
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+
+
+namespace isdl {
+
+
+struct invalid_parameter {
+	std::string _error_txt;
+	invalid_parameter ( const char* error_txt ): _error_txt ( error_txt ) {}	
+};
+
+struct buffer_full {
+};
+
+struct invalid_operation {
+	std::string _error_txt;
+	invalid_operation ( const char* error_txt ): _error_txt ( error_txt ) {}	
+};
+
+
+constexpr size_t power_of_two ( size_t value, size_t power ) {
+	switch ( value ) {
+		case 0: return 0;
+		case 1: return power;
+		default: return power_of_two ( value >> 1, power+1 );
+	}
+};
+
+
+
+template < typename Event > struct _event_wrapper {
+	Event _event;
+	size_t _published;
+};
+
+const static size_t INITIAL_SEQUENCE = -1;
+
+const static size_t STOP_EVENT = -2;
+
+/**
+ * Ring buffer state
+ */
+template < typename Event, typename Sequence > struct _ringdata {
+	
+
+	
+
+	_ringdata ( size_t max_events )  : _cursor { 0 },_cached_gate { 0 },
+			_barrier { 0 } {
+
+		for ( size_t i = 0 ; i < max_events; ++i ) {
+			_events[i]._published = INITIAL_SEQUENCE;
+		}
+
+	}
+
+	std::atomic < Sequence > _cursor;
+	std::atomic < Sequence > _cached_gate;
+	std::atomic < Sequence > _barrier;
+	_event_wrapper<Event> _events[1];
+
+};
+
+
+template < typename Event, typename Sequence, typename WiatStrategy > class disruptor;
+
+template < typename Event, typename Sequence, typename WaitStrategy > class ringbuffer {
+
+	friend class disruptor < Event, Sequence, WaitStrategy>;
+	WaitStrategy& _signal;
+	size_t _size;
+	size_t _gate_start;
+	size_t _gate_end;
+	void *_ext_mem;
+	char *_mem;
+	size_t _mask;
+	size_t _shift;
+	_ringdata < Event, Sequence > *_data;
+	Sequence *_handler_sequences;
+
+
+	/**
+	 *@brief return the minimum of the gate sequences
+	 *@param start is the start sequence
+	 *@param end is the end sequence
+	 *@return the minimum of the sequences in the specified range
+	 */
+	Sequence _min (size_t start, size_t end ) {
+		if ( start == end ) return std::numeric_limits<Sequence>::min();
+		Sequence min = _handler_sequences[start];
+		for ( auto index = start+1; index < end; ++index ) {
+			if ( min > _handler_sequences [index] ) {
+				min = _handler_sequences [index];
+			}
+		}
+		return min;
+	}
+
+	/**
+	 *@brief Returns true if the event is marked as last event
+	 *@param seq is the sequence to be checked for last flag
+	 *@return true if the event is marked as last event
+	 */
+	bool last_event ( Sequence seq ) {
+		return _data->_events[seq&_mask]._published == STOP_EVENT;
+	}
+
+	/**
+	 *@brief Inserts stop event in the disruptor to notify all the events
+	 */
+	void stop () {
+		Sequence seq = next ();
+		_data->_events[seq&_mask]._published = STOP_EVENT; 
+		_data->_barrier.store ( seq, std::memory_order_release );
+		_signal.notify();
+	}
+
+	/**
+ 	 *@brief Static method calculates requred memory size for the ringbuffer with specified 
+	 * 	parameters
+	 *@param max_events is the buffer size 
+	 *@param max_readers is the maximum number of event handlers
+	 *@param return memory size required by the ringbuffer
+	 */
+	static size_t allocation_size ( size_t max_events, size_t max_readers ) {
+		size_t ring_data_size = sizeof ( _ringdata < Event, Sequence > ) +
+				alignof ( _ringdata < Event, Sequence > );
+		ring_data_size += sizeof ( _event_wrapper < Event > ) * max_events;
+		
+		ring_data_size += sizeof ( Sequence ) * max_readers + alignof ( Sequence );
+		return ring_data_size;
+
+	}
+
+	/**
+	 *@brief Constructor allocates required memory
+	 *@param signal is a WaitStrategy object to notify the waiting handler threads 
+	 *@param max_events is the queue size needs to be power of two to optimize performance
+	 *@param max_readers is the maximum number of consumers to allocate space for
+	 *@param gate_start is the index of start gate sequence
+	 *@param gate_end is the index of one passed end gate sequence
+	 */
+	ringbuffer ( WaitStrategy signal, size_t max_events, size_t max_readers, size_t gate_start, size_t gate_end ) : 
+		ringbuffer ( signal, max_events, max_readers, gate_start, gate_end, nullptr ) {
+	}
+
+	/**
+	 *@brief takes externally allocated memory to use as data for the ring buffer
+	 * can be used with shared memory comunication between processes
+	 *@param signal is a WaitStrategy object to notify the waiting handler threads 
+	 *@param max_events is the queue size needs to be power of two to optimize performance
+	 *@param max_readers is the maximum number of consumers to allocate space for
+	 *@param gate_start is the index of start gate sequence
+	 *@param gate_end is the index of one passed end gate sequence
+	 *@param mem is the external memory pointer if memory is already allocated by the application
+	 * 	this pointer is set to null if the constructor need to allocate the memory for the ring buffer
+	 */
+	ringbuffer ( WaitStrategy signal, size_t max_events, size_t max_readers, size_t gate_start, size_t gate_end, void *mem ) 
+		: _signal {signal}, _size ( max_events ),_gate_start ( gate_start ), _gate_end ( gate_end ), _ext_mem { mem } {
+
+		_shift = power_of_two ( max_events, 0 );
+
+		if ( _shift == 0 ) throw invalid_parameter ( "Value for max_events is not a power of two" );
+
+		_mask = max_events-1;
+
+		size_t ring_data_size = sizeof ( _ringdata < Event, Sequence > ) +
+				alignof ( _ringdata < Event, Sequence > );
+		ring_data_size += alignof ( _event_wrapper < Event > );
+		ring_data_size += sizeof ( _event_wrapper < Event > ) * max_events;
+
+		if ( _ext_mem ) {
+			_mem = static_cast < char* > ( _ext_mem );
+		} else {
+			size_t total_size = ring_data_size + alignof ( _event_wrapper < Sequence > ) +
+				sizeof ( Sequence )*max_readers;
+			_mem = new char [total_size];
+		}
+		
+		_data = new ( static_cast < void * > ( _mem ) ) _ringdata < Event, Sequence > (max_events);
+
+		_handler_sequences = new ( static_cast < void* > ( _mem + ring_data_size ) ) Sequence [ max_readers ]; 
+	}
+
+	/**
+	 *@brief returns the count of published events at the specified sequence number
+	 *@param seq is the starting sequence to check for published events
+	 *@return the number of published sequences started at the specified sequence
+	 */
+	size_t count ( Sequence seq ) {
+		/// First check if the next event is a stop event
+		/// We don't need to check it in the loop. If we encounter the 
+		/// stop event in the loop this method will return and on the 
+		/// next call will return STOP_EVENT
+		if ( last_event ( seq ) )
+			return STOP_EVENT;
+		size_t count = 0;
+		// Make sure that the thread sees all the published data
+		_data->_barrier.load ( std::memory_order_acquire );
+		for ( ; _data->_events[seq&_mask]._published == seq >> _shift;
+			++count, ++seq );
+		return count;  
+	}
+
+	/**
+	 *@brief sets the sequence of the specified handler
+	 *@param handler is the handler index
+	 *@param seq is the sequence number for the handler
+	 */ 
+	void set_handler_sequence ( size_t handler, Sequence seq ) {
+		_handler_sequences [ handler ] = seq;
+		_signal.notify();
+	}
+
+	~ringbuffer () {
+		if ( ! _ext_mem ) {
+			delete[] _mem;
+		} 
+	}
+
+	
+	/**
+	 *@brief allocates the specified number of events in the ring buffer
+	 *@param nevents is the number of events to be allocated
+	 *@return returns the first sequence in the range of sequences allocated
+	 */
+	Sequence next ( size_t  nevents ) {
+		// Get the current position of the cursor
+		Sequence curr = _data->_cursor.load ( std::memory_order_relaxed );
+		// Get the current position of the  last cached handler
+		Sequence gate = _data->_cached_gate.load ( std::memory_order_relaxed );
+		/// Loop until gets the next sequences
+		while ( true ) {
+			Sequence new_seq = curr + nevents;
+			/// Make sure the new sequence is in available range
+			if ( new_seq <= gate + _size ) { 
+				if ( _data->_cursor.compare_exchange_strong ( curr, new_seq, std::memory_order_relaxed, 
+					std::memory_order_relaxed ) ) {
+					return curr;
+				}
+			} else {
+				// Check if new slots became available and wait if not
+				gate = _min ( _gate_start, _gate_end );
+				if ( new_seq > gate + _size ) {
+					_signal.wait();
+					continue;
+				}
+				
+				_data->_cached_gate.store ( gate, std::memory_order_relaxed );
+			}
+		}
+	}
+
+	/**
+	 *@brief returns next available sequence number
+	 *@return next available sequence number
+	 */
+	Sequence next () {
+		return next ( 1 );
+	}
+
+	/**
+	 *@brief returns the element corresponding to the specified sequence number
+	 *@return the element corresponding to the specified sequene number
+	 */
+	Event& operator [] ( Sequence seq ) {
+		return _data->_events[seq&_mask]._event;
+	}
+
+
+	/**
+	 *@brief publshes specified number of events starting at specified index
+	 * published events are available for consumption after the call
+	 *@param start is the sequence of the first event to be published
+	 *@param nevents is the number of events to be published
+	 */
+	void publish (Sequence start, size_t nevents ) {
+		Sequence end = start + nevents;
+		for ( auto curr = start; curr < end; ++curr ) {
+			_data->_events[curr&_mask]._published = curr >> _shift; 
+		}
+		_data->_barrier.store ( end, std::memory_order_release );
+		_signal.notify();
+	}
+
+	/**
+	 *@brief publishes single event
+	 *@param seq is the event sequence number to publish
+	 */
+	void publish ( Sequence seq ) {
+		publish ( seq, 1 );
+	}
+
+
+	/**
+	 *@brief returns the total size of the buffer
+	 *@return buffer size
+	 */
+	size_t size() {
+		return _size;
+	}
+
+	/**
+	 *@brief Returns number of slots allocated 
+	 *@param return number of allocated slots
+	 */
+	size_t allocated () {
+		return _data->_cursor.load ( std::memory_order_relaxed ) - _min (_gate_start, _gate_end );  
+	}
+
+
+	
+
+};
+
+
+
+template < typename Event, typename Sequence, typename WaitStrategy > class disruptor;
+
+/**
+ *@brief Base class for handler wrapper. Its only purpose is to access the private members of 
+ * 	disruptor class. We can not define the template to define it as a friend class. Adding
+ * 	a base class might be an easier solution than adding another template parameter to
+ * 	access the private methods
+ */
+template < typename Event, typename Sequence, typename WaitStrategy > class base_handler_wrapper {
+	disruptor < Event, Sequence, WaitStrategy > *_disruptor;
+	size_t _index;
+protected:
+	base_handler_wrapper ( disruptor < Event, Sequence, WaitStrategy > *dis, size_t index ) :
+		_disruptor ( dis ), _index ( index ) {}
+
+	void sequence ( Sequence seq ) {
+		_disruptor->set_handler_sequence ( _index, seq ) ;
+	}
+
+	Event& event ( Sequence seq ) {
+		return (*_disruptor )[seq];
+	}
+
+	bool start () {
+		return _disruptor->wait_to_start () ;
+	}
+
+	void wait () {
+		_disruptor->wait_for_event();
+	}
+	
+};
+
+/**
+ *@brief Functional object converting event handler interface to functional object required by
+ * thread constructor
+ *@param Event is the Event type parameter of the disruptor
+ *@param Sequence is the sequence type parameter of the disruptor
+ *@param WaitStrategy is the disruptor wait strategy 
+ *@param Handler is the Handler type parameter of the disruptor
+ *@param Count is the Count is object providing interface for quiring the number of published
+ * events at the specified sequence
+ */ 
+template < typename Event, typename Sequence, typename WaitStrategy, typename Handler, typename Count >
+	class handler_wrapper  : public base_handler_wrapper < Event, Sequence, WaitStrategy > {
+	
+	friend class disruptor < Event, Sequence, WaitStrategy>;
+	using base = base_handler_wrapper < Event, Sequence, WaitStrategy >;
+	Handler& _handler;
+	Count _count;
+	handler_wrapper ( Handler& handler, Count count, disruptor < Event, Sequence, WaitStrategy >* dis, size_t index ) :
+		base_handler_wrapper <Event, Sequence, WaitStrategy > ( dis,index), _handler ( handler ), _count ( count )  {}
+
+public:
+	void operator () () {
+		if ( base::start() ) {
+			return;
+		}
+
+		Sequence seq = 0;
+		Sequence release_seq = 0; 
+		bool running = true;
+		while ( running ) {
+			base::wait();
+			/// Returns -1 if stop event is received
+			size_t count = _count ( seq );
+			if ( count != STOP_EVENT ) {
+				for ( size_t ii = 0; ii < count; ++ii, ++seq ) {
+					if ( _handler.event ( seq, base::event ( seq ) ) )
+						release_seq = seq;
+				} 
+		
+				if ( count > 0 ) 
+					base::sequence ( release_seq );
+				
+			} else {
+				
+				/// Maximum sequence indicates a stop event for the handlers that work after
+				/// this one
+				base::sequence ( seq );
+				running = false;
+			}
+		}
+		
+	}
+};  
+
+
+/**
+ * Implementation of the disruptor 
+ */
+template <typename Event, typename Sequence, typename WaitStrategy > class disruptor {
+
+	friend class base_handler_wrapper < Event, Sequence, WaitStrategy>;
+
+
+	size_t _size;
+
+	ringbuffer < Event, Sequence, WaitStrategy > *_buffer;
+
+	/// Handler threads running 
+	std::vector < std::thread > _threads;
+
+	/// Start index of the last group
+	size_t _last_group_start;
+
+	/// End index of the last group
+	size_t _last_group_end;
+
+	/// Mutex the conditional variable to control 
+	/// starting and stopping the threads
+	std::mutex _start_mutex;
+	std::condition_variable _start_condition;
+	/// set to true during object distruction
+	/// to indicate that disruptor is in the process
+	/// of distruction 
+	volatile bool _destruction;
+
+	WaitStrategy _signal;
+
+
+
+
+
+	template < typename Count, typename Handler > int _initialize_handlers ( int start , int curr, 
+		Count count, Handler& handler ) {
+		
+		_threads.push_back ( std::thread ( handler_wrapper < Event, Sequence, WaitStrategy,
+					 Handler, Count > ( handler, count, this , curr ) ) );
+		return ++curr;
+	}
+
+
+	template < typename Count, typename Handler, typename... Handlers > int _initialize_handlers ( int start, 
+		int curr, Count count, Handler& handler,  Handlers&... handlers ) {
+
+		int next = _initialize_handlers ( start, curr, count, handler );
+
+		return _initialize_handlers ( start, next, count, handlers... );
+	} 
+
+	template < typename Count > int _initialize_handlers ( int start, int curr, Count count ) {
+		return curr;
+	}
+
+	void _check_and_throw ( const char *msg) {
+		if ( ! _buffer ) {
+			throw invalid_operation ( msg );
+		}
+	}
+
+	void set_handler_sequence ( size_t index, Sequence seq ) {
+		_buffer->set_handler_sequence ( index, seq );
+	}
+
+public:
+	/**
+	 *@brief wait for the disruptor to be started
+	 *@return true if signal indicates distruction
+	 */
+	bool wait_to_start  () {
+		std::unique_lock<std::mutex> lck ( _start_mutex );
+		_start_condition.wait ( lck, 
+			[this]{ return _buffer || _destruction; } );
+		return _destruction;
+	
+	}
+
+	template < typename... Handler > disruptor ( size_t size, Handler&... handlers ) :
+		 _size ( size ), _buffer { nullptr }, _destruction { false } {
+		/// Vallidate the size
+		if ( ! power_of_two ( _size , 0 ) ) { 
+			throw invalid_parameter ( "size should be a power of two" );
+		}
+		// Intialize the handlers
+		_last_group_start = 0;
+		_last_group_end = _initialize_handlers ( 0, 0,
+			 [this](Sequence seq ){ return _buffer->count ( seq ); }, handlers...);
+	}
+
+	template < typename... Handlers > disruptor<Event, Sequence, WaitStrategy >& then ( Handlers&... handlers ) {
+
+		/// Check if it is started first before adding new handlers
+		if ( _buffer ) {
+			throw invalid_operation ( "Handlers can not be added when disruptor is started");
+		}
+
+		// Intialize the handlers
+		size_t start = _last_group_start;
+		size_t end = _last_group_end;
+		size_t group_end = _initialize_handlers ( _last_group_end, _last_group_end, 
+			[this, start, end] (Sequence seq ) { 
+				if ( _buffer->last_event ( seq ) ) return STOP_EVENT;
+				return static_cast<size_t>(_buffer->_min ( start, end ) - seq); },
+			 handlers... );
+		_last_group_start = _last_group_end;
+		_last_group_end = group_end;
+		return *this;
+	}
+
+	
+	/**
+    	 *@brief starts the disruptor
+	 */
+	void start ( ) {
+		start ( nullptr );
+	}
+
+	/**
+	 *@brief starts the disruptor providing a pointer allocated for the ring buffer
+	 *@param mem is the memory allocated for the ring buffer
+ 	 */
+	void start ( void *mem ) {
+		
+		/// Start all the threads
+		{
+			std::lock_guard<std::mutex> gard( _start_mutex );
+			_buffer = new ringbuffer < Event, Sequence, WaitStrategy > ( _signal, _size, _last_group_end, 
+					_last_group_start, _last_group_end, mem );
+		}
+		_start_condition.notify_all ();
+	}
+
+	/**
+	 *@brief allocates the specified number of events in the ring buffer
+	 *@param nevents is the number of events to be allocated
+	 *@return returns the first sequence in the range of sequences allocated
+	 */
+	inline Sequence next ( size_t  nevents ) {
+		_check_and_throw( "Operation is invlid if disruptor is not started");
+		return _buffer->next ( nevents );
+	}
+
+	/**
+	 *@brief returns next available sequence number
+	 *@return next available sequence number
+	 */
+	inline Sequence next () {
+		return next ( 1 );
+	}
+
+	/**
+	 *@brief returns the element corresponding to the specified sequence number
+	 *@return the element corresponding to the specified sequene number
+	 */
+	inline Event& operator [] ( Sequence seq ) {
+		_check_and_throw( "Operation is invlid if disruptor is not started");
+		return (*_buffer)[seq];
+	}
+
+
+	/**
+	 *@brief publshes specified number of events starting at specified index
+	 * published events are available for consumption after the call
+	 *@param start is the sequence of the first event to be published
+	 *@param nevents is the number of events to be published
+	 */
+	inline void publish (Sequence start, size_t nevents ) {
+		_check_and_throw( "Operation is invlid if disruptor is not started");
+		_buffer->publish ( start, nevents );	
+	}
+
+	/**
+	 *@brief publishes single event
+	 *@param seq is the event sequence number to publish
+	 */
+	void publish ( Sequence seq ) {
+		publish ( seq, 1 );
+	}
+
+
+	/**
+	 *@brief returns the total size of the buffer
+	 *@return buffer size
+	 */
+	size_t size() {
+		_check_and_throw( "Operation is invlid if disruptor is not started");
+		return _buffer->size();
+	}
+
+	/**
+	 *@brief Returns number of slots allocated 
+	 *@param return number of allocated slots
+	 */
+	size_t allocated () {
+		_check_and_throw( "Operation is invlid if disruptor is not started");
+		return _buffer->allocated();  
+	}
+
+
+	/**
+	 *@brief Waits for event to be signaled
+	 */
+	void wait_for_event () {
+		_signal.wait();
+	}
+
+	~disruptor () {
+		/// Check if the buffer was ever created
+		if ( _buffer ) {
+			_buffer->stop();
+		} else {
+			std::lock_guard<std::mutex> lock ( _start_mutex );
+			_destruction = true;
+		}
+		_start_condition.notify_all ();
+		for ( std::thread& curr : _threads ) {
+			curr.join ();
+		}
+		_threads.clear();
+		if ( _buffer ) 
+			delete _buffer;
+	}
+
+};
+
+}

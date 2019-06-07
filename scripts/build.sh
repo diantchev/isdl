@@ -24,7 +24,7 @@ function help {
 
 
 
-if [ ! -d obj/$BUID/main ]; then
+if [ ! -d obj/$BUILD/main ]; then
 	echo "Crating object directory"
 	mkdir -p obj/$BUILD/main
 fi
@@ -36,8 +36,6 @@ fi
 
 export INCLUDE=-I$BUILD/include
 
-
-echo "Building unit tests"
 
 if [ ! -d obj/$BUILD/test ]; then
 	echo "Crating object directory for tests"
