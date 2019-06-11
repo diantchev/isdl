@@ -3,12 +3,13 @@
  */
 
 #include <logger>
-#include <ringqueue>
+#include <disruptor>
 #include <cstring>
 #include <unordered_map>
 #include <thread>
 #include <chrono>
 #include <iomanip>
+#include <iostream>
 
 
 namespace isdl {
@@ -37,7 +38,7 @@ _log_level::operator const char *() {
 }
 
 
-constexpr size_t LOG_QUEUE_SIZE = 10000;
+constexpr size_t LOG_QUEUE_SIZE_POWER_OF_TWO = 17;
 constexpr size_t LOG_BUFFER_SIZE = 100;
 constexpr const char  *DEFAULT_TIME_FORMAT = "%Y-%b-%d-%H:%M:%S.";
 
@@ -55,16 +56,25 @@ struct log_event {
         int _src_line_number; 
         timestamp _timestamp;
         bool _end_of_batch; 
-        bool _start_of_batch;
         seq_t _prev_batch_seq;
         char _msg[LOG_BUFFER_SIZE];
         size_t _msg_len;
 
 };
 
+/**
+ *@brief Disruptor wait strategy 
+ */
+struct WaitStrategy {
+	void wait () {
+		std::this_thread::yield();
+	}
+
+	void notify () {
+	}
+};
 
 
-using log_queue = ringqueue < log_event, seq_t, LOG_QUEUE_SIZE,1 >;
 
 
 static class basic_logback : public log_back {
@@ -99,54 +109,41 @@ static logger default_logger;
  */
 static std::unordered_map < std::string, logger > _log_backs;
 
-/**
- * Queue with the logging events
- */
-static log_queue _log_queue;
 
 
-class log_function {
-	
-	volatile bool& _run;
 
-	void _process_event ( seq_t seq ) {
-		log_event &ev = _log_queue[seq];
-		seq_t prev_seq = ev._prev_batch_seq;
+
+
+disruptor < log_event, int64_t, WaitStrategy> _disruptor ( 2 << LOG_QUEUE_SIZE_POWER_OF_TWO );
+
+struct log_handler {
+
+	void process_event ( int64_t seq, log_event& ev ) {
+
+		int64_t prev_seq = ev._prev_batch_seq;
+
 		if ( prev_seq != seq ) {
-			_process_event ( prev_seq );
+
+			process_event ( prev_seq, _disruptor[prev_seq] );
 			ev._back->add ( ev._level, ev._file_name, ev._src_line_number,
 			ev._timestamp, ev._msg, ev._msg_len, false, ev._end_of_batch );
-			_log_queue.free( 0, seq, 1 );
+
 		} else {
+
 			ev._back->add ( ev._level, ev._file_name, ev._src_line_number,
 			ev._timestamp, ev._msg, ev._msg_len, true, ev._end_of_batch );
-			_log_queue.free( 0, seq, 1 );
 		}
 	}
 	
-
-public:
-	log_function ( volatile bool& run ) : _run { run } {}
-	void operator () () {
-		seq_t last_seq = 0;	
-		while ( _run ) {
-			size_t elements_processed = _log_queue.committed ( last_seq );
-			for ( size_t ii= 0; ii < elements_processed; ++last_seq, ++ii ) {
-				log_event& curr_event = _log_queue[last_seq];
-				/// Check if it is the end of batch process if only end of batch 
-				if ( curr_event._end_of_batch ) {
-					_process_event ( last_seq );
-				}
-			}
-			if ( ! elements_processed ) {
-				/// Give way to other threads if nothing happened
-				std::this_thread::yield();
-			}
-		}
-		
+	bool event ( int64_t seq, log_event& ev ) {
+		if ( ! ev._end_of_batch ) 
+			return false;
+		process_event ( seq, ev );
+		return true;
 	}
 
-};
+} handler;
+	
 
 
 
@@ -154,15 +151,14 @@ public:
  * @brief implementation of logger factory
  */
 struct default_logger_factory : public logger_factory {
-	volatile bool _run;
-	std::thread _logging_thread;
+	default_logger_factory () {
+		_disruptor.first ( handler );
+		_disruptor.start ();
+		 
+	}
 	virtual basic_logger& get_logger ( const char *back_name );
 	virtual void add_logger ( const char *name, log_back *back, log_level level );
-	default_logger_factory () : _run {true}, _logging_thread (log_function ( _run ) ) {}
-	virtual ~default_logger_factory ( ) {
-		_run = false;
-		_logging_thread.join();
-	}
+
 } _log_factory;
 
 logger_factory *log_factory = &_log_factory;
@@ -206,14 +202,14 @@ void default_logger_factory::add_logger ( const char *name, log_back *back, log_
 
 
 void log_buffer::_init_ptrs () {
-	_curr_seq = _log_queue.allocate ( 1 );
-	_log_queue[_curr_seq]._end_of_batch = true;
-	_log_queue[_curr_seq]._prev_batch_seq = _curr_seq;
-	_log_queue[_curr_seq]._msg_len = 0;
-	_log_queue[_curr_seq]._back = _back;
-	_log_queue[_curr_seq]._start_of_batch = false;
+	_curr_seq = _disruptor.next();
+	log_event& ev = _disruptor [_curr_seq];
+	ev._end_of_batch = true;
+	ev._prev_batch_seq = _curr_seq;
+	ev._msg_len = 0;
+	ev._back = _back;
 	/// Initialize the inherited members
-	_M_out_beg = _log_queue[_curr_seq]._msg; 
+	_M_out_beg = ev._msg; 
 	_M_out_cur = _M_out_beg;
 	_M_out_end = _M_out_beg+LOG_BUFFER_SIZE;	
 }
@@ -225,12 +221,12 @@ log_buffer::log_buffer ( log_level __v, log_back *__b, const char *__f,
 	/// Mark this entry as end of batch first
 	/// And change it later on if we need a batch with more
 	/// than one entry
-	_log_queue[_curr_seq]._level = __v;
-	_log_queue[_curr_seq]._back = _back;
-	_log_queue[_curr_seq]._file_name = __f;
-	_log_queue[_curr_seq]._src_line_number = __l;
-	_log_queue[_curr_seq]._timestamp = __t;
-	_log_queue[_curr_seq]._start_of_batch = true;
+	log_event& ev = _disruptor [_curr_seq];
+	ev._level = __v;
+	ev._back = _back;
+	ev._file_name = __f;
+	ev._src_line_number = __l;
+	ev._timestamp = __t;
 	_M_in_beg = nullptr;
 	_M_in_cur = nullptr;
 	_M_in_end = nullptr;
@@ -243,19 +239,25 @@ log_buffer::log_buffer ( log_level __v, log_back *__b, const char *__f,
  */
 std::streamsize log_buffer::xsputn ( const char_type *__s, std::streamsize __n ) {
 	size_t cpy_len = __n;
-	_log_queue[_curr_seq]._msg_len = _M_out_cur - _M_out_beg;
-	size_t remaining_size = LOG_BUFFER_SIZE - _log_queue[_curr_seq]._msg_len;
+	
+	/// Set the message length based on the difference between the 
+	/// beginning pointer and the curr pointer. This is the only relyable way
+	/// of getting the length of the buffer
+	_disruptor [ _curr_seq ]._msg_len = _M_out_cur - _M_out_beg;
+	size_t remaining_size = LOG_BUFFER_SIZE - _disruptor[_curr_seq]._msg_len;
 	/// Check if we have enough space to copy the whole buffer
 	while ( cpy_len > remaining_size ) { /// Overflow the buffer 
 		std::memcpy ( _M_out_cur, __s, remaining_size );
 		__s += remaining_size;
 		cpy_len -= remaining_size;
-		_log_queue[_curr_seq]._msg_len += remaining_size;
-		_log_queue[_curr_seq]._end_of_batch = false;
-		_log_queue.commit ( _curr_seq, 1 );
+		_disruptor [_curr_seq ]._msg_len += remaining_size;
+		_disruptor [_curr_seq ]._end_of_batch = false;
+		_disruptor.publish( _curr_seq);
 		auto seq = _curr_seq;
+		/// _init_ptrs changes the value of _curr_seq with newelly allocated 
+		/// sequence
 		_init_ptrs ();
-		_log_queue[_curr_seq]._prev_batch_seq = seq;
+		_disruptor[_curr_seq]._prev_batch_seq = seq;
 		remaining_size = LOG_BUFFER_SIZE;
 		
 	}
@@ -263,7 +265,7 @@ std::streamsize log_buffer::xsputn ( const char_type *__s, std::streamsize __n )
 	if ( cpy_len > 0 ) {
 		std::memcpy ( _M_out_cur, __s, cpy_len );
 		_M_out_cur += cpy_len;
-		_log_queue[_curr_seq]._msg_len += cpy_len;
+		_disruptor [_curr_seq]._msg_len += cpy_len;
 	} 
 
 	return __n;
@@ -277,9 +279,9 @@ std::streamsize log_buffer::xsputn ( const char_type *__s, std::streamsize __n )
  *@brief called when overflow occurs. Gets a new slot and caries on
  */
 log_buffer::int_type log_buffer::overflow(log_buffer::int_type __c ) {
-	_log_queue[_curr_seq]._msg_len = _M_out_cur - _M_out_beg;
-	_log_queue[_curr_seq]._end_of_batch = false;
-	_log_queue.commit ( _curr_seq, 1 );
+	_disruptor[_curr_seq]._msg_len = _M_out_cur - _M_out_beg;
+	_disruptor[_curr_seq]._end_of_batch = false;
+	_disruptor.publish ( _curr_seq, 1 );
 	auto seq = _curr_seq;
 	_init_ptrs ();
 	*_M_out_cur++ = __c;
@@ -291,8 +293,8 @@ log_buffer::int_type log_buffer::overflow(log_buffer::int_type __c ) {
  * 	Makes sure that the last data is committed
  */
 log_buffer::~log_buffer () {
-	_log_queue[_curr_seq]._msg_len = _M_out_cur - _M_out_beg;
-	_log_queue.commit ( _curr_seq, 1);
+	_disruptor[_curr_seq]._msg_len = _M_out_cur - _M_out_beg;
+	_disruptor.publish ( _curr_seq );
 }
 
 

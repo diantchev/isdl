@@ -37,7 +37,8 @@ void disruptor1 () {
 
 	{
 
-		isdl::disruptor< test_event, int64_t, my_wait_strategy > testdisruptor ( 2048, handler );
+		isdl::disruptor< test_event, int64_t, my_wait_strategy > testdisruptor ( 2048);
+		testdisruptor.first ( handler );
 	
 		testdisruptor.start ();
 
@@ -92,7 +93,9 @@ void disruptor2 () {
 	
 	/// Block to create and destroy the disruptor
 	{
-		isdl::disruptor< int64_t, int64_t, my_wait_strategy > testdisruptor ( 2<<16, handler1, handler2, handler3 );
+		isdl::disruptor< int64_t, int64_t, my_wait_strategy > testdisruptor ( 2<<16 );
+	
+		testdisruptor.first( handler1, handler2, handler3 );
 		
 		testdisruptor.start();
 
@@ -161,8 +164,9 @@ void disruptor3 () {
 	
 	/// Block to create and destroy the disruptor
 	{
-		isdl::disruptor< int64_t, int64_t, my_wait_strategy > testdisruptor (1048576, handler1, handler2, handler3 );
+		isdl::disruptor< int64_t, int64_t, my_wait_strategy > testdisruptor ( 1048576 );
 		
+		testdisruptor.first ( handler1, handler2, handler3 );
 		testdisruptor.start();
 
 		std::thread publisher1 ( Publisher ( 1, 100000001, 2, testdisruptor ));
@@ -237,9 +241,9 @@ void disruptor4 () {
 	
 	/// Block to create and destroy the disruptor
 	{
-		isdl::disruptor< my_event, int64_t, my_wait_strategy > testdisruptor (1048576, handler1, handler2, handler3 );
+		isdl::disruptor< my_event, int64_t, my_wait_strategy > testdisruptor (1048576);
 
-		testdisruptor.then ( after_handler1, after_handler2, after_handler3 ); 
+		testdisruptor.first(handler1, handler2, handler3 ).then ( after_handler1, after_handler2, after_handler3 ); 
 		
 		testdisruptor.start();
 

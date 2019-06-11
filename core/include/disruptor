@@ -385,19 +385,19 @@ public:
 		}
 
 		Sequence seq = 0;
-		Sequence release_seq = 0; 
 		bool running = true;
 		while ( running ) {
 			base::wait();
 			/// Returns -1 if stop event is received
 			size_t count = _count ( seq );
 			if ( count != STOP_EVENT ) {
+				Sequence release_seq = std::numeric_limits < Sequence >::max(); 
 				for ( size_t ii = 0; ii < count; ++ii, ++seq ) {
 					if ( _handler.event ( seq, base::event ( seq ) ) )
 						release_seq = seq;
 				} 
 		
-				if ( count > 0 ) 
+				if ( release_seq < std::numeric_limits < Sequence >::max() ) 
 					base::sequence ( release_seq );
 				
 			} else {
@@ -493,16 +493,25 @@ public:
 	
 	}
 
-	template < typename... Handler > disruptor ( size_t size, Handler&... handlers ) :
-		 _size ( size ), _buffer { nullptr }, _destruction { false } {
+	disruptor ( size_t size, size_t last_group_start ) : 
+		_size { size }, _buffer { nullptr }, _destruction { false }, _last_group_start { last_group_start } {
 		/// Vallidate the size
 		if ( ! power_of_two ( _size , 0 ) ) { 
 			throw invalid_parameter ( "size should be a power of two" );
 		}
+	}
+
+	disruptor ( size_t size ) : disruptor ( size, 0 ) {}
+
+	template < typename... Handler > disruptor < Event, Sequence, WaitStrategy>& first ( Handler&... handlers ) {
+		/// Check if it is started first before adding new handlers
+		if ( _buffer ) {
+			throw invalid_operation ( "Handlers can not be added when disruptor is started");
+		}
 		// Intialize the handlers
-		_last_group_start = 0;
-		_last_group_end = _initialize_handlers ( 0, 0,
+		_last_group_end = _initialize_handlers ( _last_group_start, _last_group_start,
 			 [this](Sequence seq ){ return _buffer->count ( seq ); }, handlers...);
+		return *this;
 	}
 
 	template < typename... Handlers > disruptor<Event, Sequence, WaitStrategy >& then ( Handlers&... handlers ) {

@@ -99,9 +99,8 @@ constexpr static char FORMAT_END = '\0';
 
 /**
  *@brief compile time function to find out number of {} pairs in a constant string
- *	starting at @param start_pos
+ *	starting at @param __pos
  *@param __fmt is the format literal
- *@param __pos is the position to start
  *@param __pos is the position to start
  *@param __escape_count is the current count to be used recursively
  *@param __count is the current count
@@ -137,6 +136,12 @@ constexpr int get_params ( const char *__fmt ) {
 }
 
 
+/**
+ *@brief Parses string literal in "text {} more text {}" and converts it into
+ * segments of strings marked by { and }. Currly brackets can be escaped with currly brackets
+ * so {{ is not considered end of text segment or }} is not parsed as beginning of a new 
+ * segment
+ */
 template < size_t count > struct fmt_segments {
 
 	struct segment {
@@ -195,6 +200,9 @@ template < size_t count > struct fmt_segments {
 		return _parser ( __fmt, __pos +1, 0, __count, false );
 	}
 
+	/**
+	 * Constant expression constructor to be evaluated during compilation
+	 */
 	constexpr fmt_segments ( const char *__fmt ) : _count ( count +1 ) {
 		_segments[0]._start = __fmt;
 		_format_end = _parser ( __fmt, 0, 0, 0, false );
