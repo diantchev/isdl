@@ -35,6 +35,7 @@ _log_level::operator const char *() {
 	case log_level::error:
 		return _error;
 	}
+	return _info;
 }
 
 
